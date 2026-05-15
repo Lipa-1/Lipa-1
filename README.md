@@ -1,195 +1,355 @@
-<p align="center">
-  <img src="assets/banner.png" alt="Hermes Agent" width="100%">
-</p>
+# Hermes Agent WebSocket 平台适配器 - 架构与实现文档
 
-# Hermes Agent ☤
+## 目录
 
-<p align="center">
-  <a href="https://hermes-agent.nousresearch.com/docs/"><img src="https://img.shields.io/badge/Docs-hermes--agent.nousresearch.com-FFD700?style=for-the-badge" alt="Documentation"></a>
-  <a href="https://discord.gg/NousResearch"><img src="https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>
-  <a href="https://github.com/NousResearch/hermes-agent/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT"></a>
-  <a href="https://nousresearch.com"><img src="https://img.shields.io/badge/Built%20by-Nous%20Research-blueviolet?style=for-the-badge" alt="Built by Nous Research"></a>
-  <a href="README.zh-CN.md"><img src="https://img.shields.io/badge/Lang-中文-red?style=for-the-badge" alt="中文"></a>
-</p>
+1. [项目概述](#1-项目概述)
+2. [架构设计](#2-架构设计)2.1 整体架构2.2 组件关系
+3. [新增功能](#3-新增功能)
+4. [实现细节](#4-实现细节)4.1 WebSocket 适配器实现4.2 配置系统集成4.3 网关集成
+5. [测试验证](#5-测试验证)
+6. [使用指南](#6-使用指南)
+7. [文件变更清单](#7-文件变更清单)
 
-**The self-improving AI agent built by [Nous Research](https://nousresearch.com).** It's the only agent with a built-in learning loop — it creates skills from experience, improves them during use, nudges itself to persist knowledge, searches its own past conversations, and builds a deepening model of who you are across sessions. Run it on a $5 VPS, a GPU cluster, or serverless infrastructure that costs nearly nothing when idle. It's not tied to your laptop — talk to it from Telegram while it works on a cloud VM.
+* * *
 
-Use any model you want — [Nous Portal](https://portal.nousresearch.com), [OpenRouter](https://openrouter.ai) (200+ models), [NovitaAI](https://novita.ai) (90+ models, pay-per-use), [NVIDIA NIM](https://build.nvidia.com) (Nemotron), [Xiaomi MiMo](https://platform.xiaomimimo.com), [z.ai/GLM](https://z.ai), [Kimi/Moonshot](https://platform.moonshot.ai), [MiniMax](https://www.minimax.io), [Hugging Face](https://huggingface.co), OpenAI, or your own endpoint. Switch with `hermes model` — no code changes, no lock-in.
+## 1. 项目概述
 
-<table>
-<tr><td><b>A real terminal interface</b></td><td>Full TUI with multiline editing, slash-command autocomplete, conversation history, interrupt-and-redirect, and streaming tool output.</td></tr>
-<tr><td><b>Lives where you do</b></td><td>Telegram, Discord, Slack, WhatsApp, Signal, and CLI — all from a single gateway process. Voice memo transcription, cross-platform conversation continuity.</td></tr>
-<tr><td><b>A closed learning loop</b></td><td>Agent-curated memory with periodic nudges. Autonomous skill creation after complex tasks. Skills self-improve during use. FTS5 session search with LLM summarization for cross-session recall. <a href="https://github.com/plastic-labs/honcho">Honcho</a> dialectic user modeling. Compatible with the <a href="https://agentskills.io">agentskills.io</a> open standard.</td></tr>
-<tr><td><b>Scheduled automations</b></td><td>Built-in cron scheduler with delivery to any platform. Daily reports, nightly backups, weekly audits — all in natural language, running unattended.</td></tr>
-<tr><td><b>Delegates and parallelizes</b></td><td>Spawn isolated subagents for parallel workstreams. Write Python scripts that call tools via RPC, collapsing multi-step pipelines into zero-context-cost turns.</td></tr>
-<tr><td><b>Runs anywhere, not just your laptop</b></td><td>Seven terminal backends — local, Docker, SSH, Singularity, Modal, Daytona, and Vercel Sandbox. Daytona and Modal offer serverless persistence — your agent's environment hibernates when idle and wakes on demand, costing nearly nothing between sessions. Run it on a $5 VPS or a GPU cluster.</td></tr>
-<tr><td><b>Research-ready</b></td><td>Batch trajectory generation, Atropos RL environments, trajectory compression for training the next generation of tool-calling models.</td></tr>
-</table>
+### 1.1 背景
 
----
+本项目将 WebSocket 代理功能集成到 Hermes Agent Gateway 中，允许 Web 客户端（如浏览器、自定义应用）通过 WebSocket 协议与 Hermes Agent 进行实时交互。
 
-## Quick Install
+### 1.2 目标
 
-### Linux, macOS, WSL2, Termux
+* 提供基于 WebSocket 的实时消息通道
+* 支持 token 认证机制
+* 集成到现有的 Hermes Gateway 平台适配器系统
+* 支持跨平台消息路由
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
-```
+### 1.3 方案选择
 
-### Windows (native, PowerShell) — Early Beta
+采用 **方案3：集成到 Hermes Gateway**，将 WebSocket 作为一个新的平台适配器实现。
 
-> **Heads up:** Native Windows support is **early beta**. It installs and runs, but hasn't been road-tested as broadly as our Linux/macOS/WSL2 paths. Please [file issues](https://github.com/NousResearch/hermes-agent/issues) when you hit rough edges. For the most battle-tested Windows setup today, run the Linux/macOS one-liner above inside **WSL2**.
+* * *
 
-Run this in PowerShell:
+## 2. 架构设计
 
-```powershell
-irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1 | iex
-```
+### 2.1 整体架构
 
-The installer handles everything: uv, Python 3.11, Node.js, ripgrep, ffmpeg, **and a portable Git Bash** (MinGit, unpacked to `%LOCALAPPDATA%\hermes\git` — no admin required, completely isolated from any system Git install).  Hermes uses this bundled Git Bash to run shell commands.
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │                        Hermes Agent Gateway                        │
+    ├─────────────────────────────────────────────────────────────────────┤
+    │  ┌──────────────┐    ┌──────────────┐    ┌──────────────────────┐  │
+    │  │  Platform    │    │  Platform    │    │   WebSocket         │  │
+    │  │  Adapters    │    │  Adapters    │    │   Platform Adapter   │  │
+    │  │  (Telegram,  │    │  (Discord,   │    │                      │  │
+    │  │   Slack,     │    │   WhatsApp,  │    │  ┌────────────────┐ │  │
+    │  │   ...)       │    │   ...)       │    │  │ WebSocket       │ │  │
+    │  └──────┬───────┘    └──────┬───────┘    │  │   Server        │ │  │
+    │         │                   │             │  │  (aiohttp)     │ │  │
+    │         └───────────────────┴─────────────┼──┤                 │ │  │
+    │                                           │  │  ┌────────────┐ │ │  │
+    │                                           │  │  │ Client     │ │ │  │
+    │                                           │  │  │ Manager    │ │ │  │
+    │                                           │  │  └────────────┘ │ │  │
+    │                                           │  └────────────────┘ │  │
+    │                                           └──────────────────────┘  │
+    │                              │                                     │
+    │                              ▼                                     │
+    │                   ┌─────────────────┐                              │
+    │                   │  Message Router │                              │
+    │                   │  (统一消息路由)   │                              │
+    │                   └────────┬────────┘                              │
+    │                            ▼                                       │
+    │                   ┌─────────────────┐                              │
+    │                   │  Session Store  │                              │
+    │                   └─────────────────┘                              │
+    └─────────────────────────────────────────────────────────────────────┘
+                                  │
+                                  ▼
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │                        Web Clients                                  │
+    │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐             │
+    │  │  Browser     │  │  Custom App  │  │  IoT Device  │             │
+    │  │  WebSocket   │  │  WebSocket   │  │  WebSocket   │             │
+    │  └──────────────┘  └──────────────┘  └──────────────┘             │
+    └─────────────────────────────────────────────────────────────────────┘
 
-If you already have Git installed, the installer detects it and uses that instead.  Otherwise a ~45MB MinGit download is all you need — it won't touch or interfere with any system Git.
+### 2.2 组件关系
 
-> **Android / Termux:** The tested manual path is documented in the [Termux guide](https://hermes-agent.nousresearch.com/docs/getting-started/termux). On Termux, Hermes installs a curated `.[termux]` extra because the full `.[all]` extra currently pulls Android-incompatible voice dependencies.
->
-> **Windows:** Native Windows is supported as an **early beta** — the PowerShell one-liner above installs everything, but expect rough edges and please file issues when you hit them. If you'd rather use WSL2 (our most battle-tested Windows path), the Linux command works there too. Native Windows install lives under `%LOCALAPPDATA%\hermes`; WSL2 installs under `~/.hermes` as on Linux.  The only Hermes feature that currently needs WSL2 specifically is the browser-based dashboard chat pane (it uses a POSIX PTY — classic CLI and gateway both run natively).
+| 组件  | 职责  | 状态  |
+| --- | --- | --- |
+| **WebSocketAdapter** | 平台适配器主类，管理 WebSocket 服务器生命周期 | 新增  |
+| **WebSocketClient** | 客户端连接封装，处理单个连接的状态管理 | 新增  |
+| **GatewayRunner** | 网关运行器，协调所有平台适配器 | 修改  |
+| **GatewayConfig** | 网关配置系统，管理平台配置 | 修改  |
+| **Platform** | 平台枚举，定义支持的消息平台 | 修改  |
 
-After installation:
+### 2.3 数据流
 
-```bash
-source ~/.bashrc    # reload shell (or: source ~/.zshrc)
-hermes              # start chatting!
-```
+    客户端消息 → WebSocket Server → WebSocketAdapter → Message Router → Agent
+                                                               │
+    Agent 响应 ←───────────────────────────────────────────────┘
 
----
+* * *
 
-## Getting Started
+## 3. 新增功能
 
-```bash
-hermes              # Interactive CLI — start a conversation
-hermes model        # Choose your LLM provider and model
-hermes tools        # Configure which tools are enabled
-hermes config set   # Set individual config values
-hermes gateway      # Start the messaging gateway (Telegram, Discord, etc.)
-hermes setup        # Run the full setup wizard (configures everything at once)
-hermes claw migrate # Migrate from OpenClaw (if coming from OpenClaw)
-hermes update       # Update to the latest version
-hermes doctor       # Diagnose any issues
-```
+### 3.1 核心功能
 
-📖 **[Full documentation →](https://hermes-agent.nousresearch.com/docs/)**
+| 功能  | 描述  | 实现方式 |
+| --- | --- | --- |
+| **WebSocket 服务器** | 基于 aiohttp 的 WebSocket 服务 | `aiohttp.web.Application` |
+| **Token 认证** | 连接时的 token 验证机制 | URL 参数 + 环境变量 |
+| **客户端管理** | 连接状态、消息计数、速率限制 | `WebSocketClient` 类 |
+| **消息路由** | 集成到 Gateway 消息路由系统 | `BasePlatformAdapter` 继承 |
+| **健康检查** | HTTP 健康检查端点 | `/health` 路由 |
+| **跨平台消息投递** | 支持向其他平台发送消息 | `gateway_runner` 引用 |
 
-## CLI vs Messaging Quick Reference
+### 3.2 安全特性
 
-Hermes has two entry points: start the terminal UI with `hermes`, or run the gateway and talk to it from Telegram, Discord, Slack, WhatsApp, Signal, or Email. Once you're in a conversation, many slash commands are shared across both interfaces.
+| 特性  | 实现  |
+| --- | --- |
+| Token 认证 | 所有连接必须携带有效 token |
+| 速率限制 | 每分钟最多 60 条消息 |
+| 连接限制 | 最大并发连接数可配置 |
+| 连接超时 | 5 分钟无活动自动断开 |
 
-| Action | CLI | Messaging platforms |
-|---------|-----|---------------------|
-| Start chatting | `hermes` | Run `hermes gateway setup` + `hermes gateway start`, then send the bot a message |
-| Start fresh conversation | `/new` or `/reset` | `/new` or `/reset` |
-| Change model | `/model [provider:model]` | `/model [provider:model]` |
-| Set a personality | `/personality [name]` | `/personality [name]` |
-| Retry or undo the last turn | `/retry`, `/undo` | `/retry`, `/undo` |
-| Compress context / check usage | `/compress`, `/usage`, `/insights [--days N]` | `/compress`, `/usage`, `/insights [days]` |
-| Browse skills | `/skills` or `/<skill-name>` | `/<skill-name>` |
-| Interrupt current work | `Ctrl+C` or send a new message | `/stop` or send a new message |
-| Platform-specific status | `/platforms` | `/status`, `/sethome` |
+### 3.3 配置参数
 
-For the full command lists, see the [CLI guide](https://hermes-agent.nousresearch.com/docs/user-guide/cli) and the [Messaging Gateway guide](https://hermes-agent.nousresearch.com/docs/user-guide/messaging).
+| 参数  | 类型  | 默认值 | 说明  |
+| --- | --- | --- | --- |
+| `host` | string | `127.0.0.1` | 绑定地址 |
+| `port` | int | `8765` | 绑定端口 |
+| `token` | string | -   | 认证令牌 |
+| `max_connections` | int | `10` | 最大连接数 |
 
----
+* * *
 
-## Documentation
+## 4. 实现细节
 
-All documentation lives at **[hermes-agent.nousresearch.com/docs](https://hermes-agent.nousresearch.com/docs/)**:
+### 4.1 WebSocket 适配器实现
 
-| Section | What's Covered |
-|---------|---------------|
-| [Quickstart](https://hermes-agent.nousresearch.com/docs/getting-started/quickstart) | Install → setup → first conversation in 2 minutes |
-| [CLI Usage](https://hermes-agent.nousresearch.com/docs/user-guide/cli) | Commands, keybindings, personalities, sessions |
-| [Configuration](https://hermes-agent.nousresearch.com/docs/user-guide/configuration) | Config file, providers, models, all options |
-| [Messaging Gateway](https://hermes-agent.nousresearch.com/docs/user-guide/messaging) | Telegram, Discord, Slack, WhatsApp, Signal, Home Assistant |
-| [Security](https://hermes-agent.nousresearch.com/docs/user-guide/security) | Command approval, DM pairing, container isolation |
-| [Tools & Toolsets](https://hermes-agent.nousresearch.com/docs/user-guide/features/tools) | 40+ tools, toolset system, terminal backends |
-| [Skills System](https://hermes-agent.nousresearch.com/docs/user-guide/features/skills) | Procedural memory, Skills Hub, creating skills |
-| [Memory](https://hermes-agent.nousresearch.com/docs/user-guide/features/memory) | Persistent memory, user profiles, best practices |
-| [MCP Integration](https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp) | Connect any MCP server for extended capabilities |
-| [Cron Scheduling](https://hermes-agent.nousresearch.com/docs/user-guide/features/cron) | Scheduled tasks with platform delivery |
-| [Context Files](https://hermes-agent.nousresearch.com/docs/user-guide/features/context-files) | Project context that shapes every conversation |
-| [Architecture](https://hermes-agent.nousresearch.com/docs/developer-guide/architecture) | Project structure, agent loop, key classes |
-| [Contributing](https://hermes-agent.nousresearch.com/docs/developer-guide/contributing) | Development setup, PR process, code style |
-| [CLI Reference](https://hermes-agent.nousresearch.com/docs/reference/cli-commands) | All commands and flags |
-| [Environment Variables](https://hermes-agent.nousresearch.com/docs/reference/environment-variables) | Complete env var reference |
+**文件**: `gateway/platforms/websocket.py`
 
----
+#### 4.1.1 类结构
 
-## Migrating from OpenClaw
+    class WebSocketAdapter(BasePlatformAdapter):
+        """WebSocket 平台适配器"""
+    
+        def __init__(self, config: PlatformConfig):
+            # 初始化配置参数
+            self._host = config.extra.get("host", "127.0.0.1")
+            self._port = config.extra.get("port", 8765)
+            self._token = config.extra.get("token", "") or os.getenv("WEBSOCKET_TOKEN", "")
+            self._max_connections = config.extra.get("max_connections", 10)
+            self._clients: Dict[str, WebSocketClient] = {}
 
-If you're coming from OpenClaw, Hermes can automatically import your settings, memories, skills, and API keys.
+#### 4.1.2 核心方法
 
-**During first-time setup:** The setup wizard (`hermes setup`) automatically detects `~/.openclaw` and offers to migrate before configuration begins.
+| 方法  | 功能  |
+| --- | --- |
+| `connect()` | 启动 WebSocket 服务器 |
+| `disconnect()` | 停止服务器并断开所有连接 |
+| `send()` | 向指定客户端发送消息 |
+| `get_chat_info()` | 获取会话信息 |
+| `_handle_websocket()` | WebSocket 连接处理协程 |
+| `_authenticate()` | Token 认证验证 |
 
-**Anytime after install:**
+#### 4.1.3 客户端管理
 
-```bash
-hermes claw migrate              # Interactive migration (full preset)
-hermes claw migrate --dry-run    # Preview what would be migrated
-hermes claw migrate --preset user-data   # Migrate without secrets
-hermes claw migrate --overwrite  # Overwrite existing conflicts
-```
+    class WebSocketClient:
+        """单个 WebSocket 客户端的状态管理"""
+        client_id: str          # 客户端唯一标识
+        connected_at: float     # 连接时间
+        last_message_at: float  # 最后消息时间
+        authenticated: bool     # 认证状态
+        rate_counts: list       # 速率限制计数器
 
-What gets imported:
-- **SOUL.md** — persona file
-- **Memories** — MEMORY.md and USER.md entries
-- **Skills** — user-created skills → `~/.hermes/skills/openclaw-imports/`
-- **Command allowlist** — approval patterns
-- **Messaging settings** — platform configs, allowed users, working directory
-- **API keys** — allowlisted secrets (Telegram, OpenRouter, OpenAI, Anthropic, ElevenLabs)
-- **TTS assets** — workspace audio files
-- **Workspace instructions** — AGENTS.md (with `--workspace-target`)
+### 4.2 配置系统集成
 
-See `hermes claw migrate --help` for all options, or use the `openclaw-migration` skill for an interactive agent-guided migration with dry-run previews.
+**文件**: `gateway/config.py`
 
----
+#### 4.2.1 Platform 枚举扩展
 
-## Contributing
+    class Platform(Enum):
+        # ... 其他平台 ...
+        WEBSOCKET = "websocket"  # 新增
 
-We welcome contributions! See the [Contributing Guide](https://hermes-agent.nousresearch.com/docs/developer-guide/contributing) for development setup, code style, and PR process.
+#### 4.2.2 连接检查器
 
-Quick start for contributors — clone and go with `setup-hermes.sh`:
+    _PLATFORM_CONNECTED_CHECKERS = {
+        # ... 其他平台 ...
+        Platform.WEBSOCKET: lambda cfg: bool(
+            cfg.token or cfg.extra.get("token") or os.getenv("WEBSOCKET_TOKEN")
+        ),
+    }
 
-```bash
-git clone https://github.com/NousResearch/hermes-agent.git
-cd hermes-agent
-./setup-hermes.sh     # installs uv, creates venv, installs .[all], symlinks ~/.local/bin/hermes
-./hermes              # auto-detects the venv, no need to `source` first
-```
+### 4.3 网关集成
 
-Manual path (equivalent to the above):
+**文件**: `gateway/run.py`
 
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-uv venv .venv --python 3.11
-source .venv/bin/activate
-uv pip install -e ".[all,dev]"
-scripts/run_tests.sh
-```
+#### 4.3.1 适配器工厂
 
-> **RL Training (optional):** The RL/Atropos integration (`environments/`) — see [`CONTRIBUTING.md`](https://github.com/NousResearch/hermes-agent/blob/main/CONTRIBUTING.md#development-setup) for the full setup.
+    def _create_adapter(self, platform: Platform, config: Any) -> Optional[BasePlatformAdapter]:
+        # ... 其他平台处理 ...
+        elif platform == Platform.WEBSOCKET:
+            from gateway.platforms.websocket import WebSocketAdapter, check_websocket_requirements
+            if not check_websocket_requirements():
+                logger.warning("WebSocket: aiohttp not installed")
+                return None
+            adapter = WebSocketAdapter(config)
+            adapter.gateway_runner = self  # 用于跨平台消息投递
+            return adapter
 
----
+#### 4.3.2 授权配置
 
-## Community
+    # WebSocket 平台免授权（通过 token 自行认证）
+    if source.platform in {Platform.HOMEASSISTANT, Platform.WEBHOOK, Platform.WEBSOCKET}:
+        return True
+    
+    # 授权映射
+    platform_env_map = {
+        # ... 其他平台 ...
+        Platform.WEBSOCKET: "WEBSOCKET_ALLOWED_USERS",
+    }
 
-- 💬 [Discord](https://discord.gg/NousResearch)
-- 📚 [Skills Hub](https://agentskills.io)
-- 🐛 [Issues](https://github.com/NousResearch/hermes-agent/issues)
-- 🔌 [HermesClaw](https://github.com/AaronWong1999/hermesclaw) — Community WeChat bridge: Run Hermes Agent and OpenClaw on the same WeChat account.
+* * *
 
----
+## 5. 测试验证
 
-## License
+### 5.1 测试脚本
 
-MIT — see [LICENSE](LICENSE).
+**文件**: `test_websocket.py`
 
-Built by [Nous Research](https://nousresearch.com).
+#### 测试功能
+
+| 测试项 | 说明  |
+| --- | --- |
+| 健康检查 | 验证服务器是否正常运行 |
+| 连接测试 | 建立 WebSocket 连接 |
+| 认证测试 | 验证 token 认证 |
+| 消息测试 | 发送/接收消息 |
+
+#### 测试结果
+
+    ✅ WebSocket server is healthy:
+       Status: ok
+       Platform: websocket
+       Clients: 0/10
+    
+    ✅ Connected successfully!
+    📡 Connection confirmed
+       Client ID: 1778810189796-1
+       Authenticated: True
+    
+    🏓 Pong received
+    🤖 Hermes response received
+    ✅ Test completed!
+
+### 5.2 验证方法
+
+    # 启动网关
+    $env:HERMES_HOME="C:\Users\a\Desktop\hermes-agent-main\hermes-agent-main\.hermes"
+    $env:WEBSOCKET_TOKEN="my-secret-token"
+    python -c "from hermes_cli.gateway import run_gateway; run_gateway(verbose=2)"
+    
+    # 测试连接
+    python test_websocket.py my-secret-token
+
+* * *
+
+## 6. 使用指南
+
+### 6.1 配置方式
+
+**配置文件**: `.hermes/config.yaml`
+
+    platforms:
+      websocket:
+        enabled: true
+        extra:
+          host: "127.0.0.1"
+          port: 8765
+          token: "my-secret-token"
+          max_connections: 10
+
+**环境变量方式**:
+
+    $env:WEBSOCKET_TOKEN="my-secret-token"
+
+### 6.2 连接方式
+
+**WebSocket URL**:
+
+    ws://127.0.0.1:8765/ws?token=my-secret-token
+
+**健康检查**:
+
+    http://127.0.0.1:8765/health
+
+### 6.3 消息格式
+
+**客户端发送**:
+
+    {
+      "type": "message",
+      "content": "Hello, Hermes!",
+      "session_id": "optional-session-id"
+    }
+
+**服务端响应**:
+
+    {
+      "type": "response",
+      "content": "Hi there!",
+      "session_id": "session-id"
+    }
+
+* * *
+
+## 7. 文件变更清单
+
+### 7.1 新增文件
+
+| 文件  | 路径  | 说明  |
+| --- | --- | --- |
+| `websocket.py` | `gateway/platforms/websocket.py` | WebSocket 平台适配器 |
+| `test_websocket.py` | `test_websocket.py` | 测试脚本 |
+| `config.yaml` | `.hermes/config.yaml` | 测试配置文件 |
+| `WEBSOCKET_PLATFORM_DOCUMENTATION.md` | `WEBSOCKET_PLATFORM_DOCUMENTATION.md` | 本文档 |
+
+### 7.2 修改文件
+
+| 文件  | 路径  | 修改内容 |
+| --- | --- | --- |
+| `config.py` | `gateway/config.py` | 添加 Platform.WEBSOCKET 枚举 |
+| `config.py` | `gateway/config.py` | 添加连接检查器 |
+| `run.py` | `gateway/run.py` | 添加适配器工厂逻辑 |
+| `run.py` | `gateway/run.py` | 添加授权配置 |
+
+### 7.3 技术栈
+
+| 技术  | 版本  | 用途  |
+| --- | --- | --- |
+| Python | 3.11+ | 主语言 |
+| aiohttp | ^3.9 | WebSocket 服务器 |
+| Hermes Agent | -   | 基础框架 |
+
+* * *
+
+## 附录：启动命令汇总
+
+    # 开发环境启动
+    cd C:\Users\a\Desktop\hermes-agent-main\hermes-agent-main
+    $env:HERMES_HOME="C:\Users\a\Desktop\hermes-agent-main\hermes-agent-main\.hermes"
+    python -c "from hermes_cli.gateway import run_gateway; run_gateway(verbose=2)"
+    
+    # 生产环境启动（使用默认 HERMES_HOME）
+    python -c "from hermes_cli.gateway import run_gateway; run_gateway()"
+    
+    # 测试 WebSocket 连接
+    python test_websocket.py <your-token>
+
+* * *
+
+**文档版本**: v1.0**创建日期**: 2026-05-15**作者**: Hermes Agent Development Team
